@@ -16,6 +16,13 @@ node main.mjs
 - 中途可直接关掉浏览器窗口或 Ctrl+C 中断，进度保存在服务端，重跑自动续。
 - 视频不能跳进度（服务器会拒绝 seek 并回跳），脚本按顺序以 2 倍速真实播放；约播放到 72% 时服务器即判定完成。
 
+### 边用电脑边刷
+
+- 可以切换窗口、最小化、锁屏，视频继续播；脚本每 0.7s 自动恢复被暂停的播放（对抗鼠标移走/失焦检测）
+- ⚠ **别让电脑睡眠**：建议插电 + 关闭自动睡眠（macOS 可用 `caffeinate -i node main.mjs` 防休眠）
+- ⚠ 脚本运行期间**不要在其他浏览器打开同一课程页面**（会触发平台冲突重载，导致章节加载失败）
+- 后台窗口时浏览器会节流定时器，倍速偶尔被重置、恢复略慢（秒级），对整体进度影响很小
+
 ### 配置
 
 账号等私密信息不写入代码仓库。首次使用：
@@ -24,15 +31,39 @@ node main.mjs
 cp config.example.mjs config.mjs   # Windows: copy config.example.mjs config.mjs
 ```
 
-编辑 `config.mjs`：
+编辑 `config.mjs`，填入以下三个参数：
 
 | 变量 | 说明 |
 |---|---|
-| `url_login` | 课程章节页 URL（进入任意章节后复制地址栏） |
-| `edge_path` | Edge/Chrome 可执行文件路径 |
-| `username` / `password` | 学习通手机号与密码 |
+| `url_login` | 课程章节页 URL（获取方法见下） |
+| `edge_path` | 浏览器可执行文件路径（获取方法见下） |
+| `username` / `password` | 学习通手机号与密码（获取方法见下） |
 
 `config.mjs` 已被 `.gitignore` 排除，不会被提交。
+
+以下获取方法参考 [kejaly 原项目说明](https://github.com/kejaly/ucas_english_mooc)，已按 2026 年秋季实测更新。
+
+#### 1、获取 url_login
+
+1. 访问国科大在线：https://mooc.ucas.edu.cn/portal
+2. 校内登录 → 信息门户登录
+3. 登录后回到 https://mooc.ucas.edu.cn/portal → 进入个人空间 → 选择“硕士学位英语（慕课学习）”→ 点击章节 → 随便进入一个章节，复制浏览器地址栏的 URL（就是 `url_login` 参数）
+
+#### 2、获取 username 和 password
+
+就是**学习通账号的手机号和密码**（与信息门户登录共用一套）。
+
+验证方法：在浏览器**无痕模式**下访问上面复制的 `url_login`，会重定向到登录页——2026 年秋季实测为 `https://passport2.chaoxing.com/login`（老版本为 `passport.mooc.ucas.edu.cn`，现已不用）。能在这个页面正常登录的手机号和密码，即可填入 `config.mjs`。
+
+#### 3、获取 edge_path
+
+浏览器可执行文件路径。仅支持 Chromium 内核浏览器（Chrome、Edge、Brave 等），Firefox 和 Safari 不行。
+
+- **Windows**（默认）：`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`，正常来说不需要修改
+- **macOS**（默认 Chrome）：`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
+- 也可使用 Playwright 自带的 Chromium：删掉 `main.mjs` 中 `executablePath: edge_path` 那一行，然后执行 `npx playwright install chromium`
+
+### 运行参数
 
 倍速等运行参数在 `main.mjs` 顶部调整；环境变量 `MAX_SECTIONS=1` 可只跑 1 节（测试用）。
 
