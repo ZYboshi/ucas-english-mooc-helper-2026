@@ -1,0 +1,16 @@
+{
+  "name": "ucas-mooc-english-auto",
+  "version": "2.0.0",
+  "description": "国科大硕士学位英语（慕课学习）自动刷课脚本（2026 秋季版）",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "node main.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.48.2"
+  }
+}

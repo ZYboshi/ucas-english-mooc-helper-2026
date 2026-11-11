@@ -1,0 +1,5 @@
+node_modules/
+.profile/
+config.mjs
+recon/
+*.log
