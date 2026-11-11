@@ -163,6 +163,8 @@ async function ensureLogin(page) {
 async function mainLoop() {
   const attempts = new Map(); // chapterId -> 真实失败次数
   const lastTouched = new Map(); // chapterId -> 上次处理时间戳
+  const softSkips = new Map(); // chapterId -> "服务端已完成但树未刷新"复查次数
+  const serverDone = new Set(); // 软跳过达上限的小节，不再复查
   const processedTitles = [];
   let sectionsDone = 0;
 
@@ -191,13 +193,22 @@ async function mainLoop() {
     const candidate = unfinished.find(
       (s) =>
         (attempts.get(s.id) || 0) < MAX_ATTEMPTS &&
+        !serverDone.has(s.id) &&
         now - (lastTouched.get(s.id) || 0) > RECHECK_COOLDOWN,
     );
 
     if (!candidate) {
-      if (unfinished.every((s) => (attempts.get(s.id) || 0) >= MAX_ATTEMPTS)) {
-        err("以下小节多次尝试仍未完成，可能包含无法自动完成的任务点（如测验），请手动处理：");
-        for (const s of unfinished) err(`   - ${s.nameText || s.title}（已尝试 ${attempts.get(s.id)} 次）`);
+      const pending = unfinished.filter(
+        (s) => (attempts.get(s.id) || 0) < MAX_ATTEMPTS && !serverDone.has(s.id),
+      );
+      if (pending.length === 0) {
+        const blocked = unfinished.filter((s) => (attempts.get(s.id) || 0) >= MAX_ATTEMPTS);
+        if (blocked.length > 0) {
+          err("以下小节多次尝试仍未完成，可能包含无法自动完成的任务点（如测验），请手动处理：");
+          for (const s of blocked) err(`   - ${s.nameText || s.title}（已尝试 ${attempts.get(s.id)} 次）`);
+        } else {
+          ok(`🎉 全部完成！共 ${sections.length} 个小节。`);
+        }
         break;
       }
       // 剩余小节都在冷却期（多为刚完成、树尚未刷新的快速复查），稍等重扫
@@ -215,8 +226,18 @@ async function mainLoop() {
 
     const result = await processSection(page, candidate, attemptNo);
     if (result.finished) {
-      sectionsDone += 1;
-      processedTitles.push(candidate.nameText || candidate.title);
+      if (result.nothingToDo) {
+        // 服务端已判完成但树未刷新：软跳过计数，连续 3 次后不再复查
+        const n = (softSkips.get(candidate.id) || 0) + 1;
+        softSkips.set(candidate.id, n);
+        if (n >= 3) {
+          serverDone.add(candidate.id);
+          ok(`服务端已判定完成（树刷新延迟），不再复查：${candidate.nameText || candidate.title}`);
+        }
+      } else {
+        sectionsDone += 1;
+        processedTitles.push(candidate.nameText || candidate.title);
+      }
     } else {
       attempts.set(candidate.id, (attempts.get(candidate.id) || 0) + 1);
     }
@@ -279,12 +300,17 @@ async function processSection(page, sec, attemptNo) {
   try {
     await page.waitForFunction(
       (wantId) => {
-        const f = document.querySelector("#iframe");
-        const a = f && f.contentWindow ? f.contentWindow.mArg : null;
-        return (
-          a && typeof a === "object" && Array.isArray(a.attachments) &&
-          String(a.defaults?.knowledgeid) === String(wantId)
-        );
+        try {
+          const f = document.querySelector("#iframe");
+          const a = f && f.contentWindow ? f.contentWindow.mArg : null;
+          return (
+            a && typeof a === "object" && Array.isArray(a.attachments) &&
+            String(a.defaults?.knowledgeid) === String(wantId)
+          );
+        } catch {
+          // iframe 替换瞬间可能出现跨域访问（SecurityError），忽略并继续轮询
+          return false;
+        }
       },
       sec.id,
       { timeout: 45_000 },
@@ -306,30 +332,32 @@ async function processSection(page, sec, attemptNo) {
     return { finished: false };
   }
 
-  const info = await readSectionInfo(page);
-  if (!info) {
+  const secInfo = await readSectionInfo(page);
+  if (!secInfo) {
     warn("   无法读取任务配置，跳过本节");
     return { finished: false };
   }
 
   // ---- 视频任务点 ----
-  const videoAtts = info.attachments.filter((a) => a.type === "video" && a.job);
+  const videoAtts = secInfo.attachments.filter((a) => a.type === "video" && a.job);
   if (videoAtts.length === 0) {
     info("   本节无视频任务点");
   }
+  let nothingToDo = true; // mArg 中所有计分任务点均已完成（树刷新滞后时出现）
   for (const att of videoAtts) {
     if (att.isPassed) {
       ok(`   视频任务点已完成，跳过（jobid=${att.jobid}）`);
       continue;
     }
+    nothingToDo = false;
     const done = await watchVideo(page, att);
     if (!done) result.finished = false; // 超时不终止，继续处理后续
   }
 
   // ---- 文档任务点（当前课程非计分，仅兼容未来变化）----
-  await processDocuments(page, info);
+  await processDocuments(page, secInfo);
 
-  return result;
+  return { ...result, nothingToDo };
 }
 
 // 读取 mArg 任务配置
@@ -530,7 +558,7 @@ async function watchVideo(page, att) {
 // ============================================================
 // 文档任务点（PPT/PDF）：仅当计分（job:true）时上报
 // ============================================================
-async function processDocuments(page, info) {
+async function processDocuments(page, secInfo) {
   const cardsFrame = page.frames().find((f) => f.url().includes("/mooc-ans/knowledge/cards"));
   if (!cardsFrame) return;
 
@@ -546,7 +574,7 @@ async function processDocuments(page, info) {
     const jobid = String(data.jobid || "");
     if (!jobid) continue; // 非计分任务点（本课程文档均属此类）
 
-    const att = info.attachments.find((a) => a.jobid === jobid);
+    const att = secInfo.attachments.find((a) => a.jobid === jobid);
     if (!att || !att.job) {
       info("   文档为非计分任务点，跳过");
       continue;
@@ -555,9 +583,9 @@ async function processDocuments(page, info) {
     const base = new URL(cardsFrame.url()).origin;
     const q = new URLSearchParams({
       jobid,
-      knowledgeid: info.defaults.knowledgeid,
-      courseid: info.defaults.courseid,
-      clazzid: info.defaults.clazzId,
+      knowledgeid: secInfo.defaults.knowledgeid,
+      courseid: secInfo.defaults.courseid,
+      clazzid: secInfo.defaults.clazzId,
       jtoken: att.jtoken || "",
       checkMicroTopic: "true",
       microTopicId: att.microTopicId == null ? "undefined" : String(att.microTopicId),
